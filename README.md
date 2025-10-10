@@ -175,5 +175,3 @@ Stores identification data:
 
 This project is freely available under the **MIT License**.
 
-```
-```
