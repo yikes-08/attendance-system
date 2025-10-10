@@ -1,0 +1,25 @@
+ATTENDANCE REPORT - 2025-10-10
+==================================================
+
+Total Records: 7
+Unique People: 6
+Video Processing Time: 23:24:38
+
+PEOPLE DETECTED:
+------------------------------
+personD: First seen 23:22:58, Last seen 23:22:58, Avg confidence: 0.846
+personG: First seen 23:23:33, Last seen 23:24:22, Avg confidence: 0.756
+personE: First seen 23:23:45, Last seen 23:23:45, Avg confidence: 0.831
+personA: First seen 23:23:56, Last seen 23:23:56, Avg confidence: 0.717
+personF: First seen 23:24:04, Last seen 23:24:04, Avg confidence: 0.823
+personB: First seen 23:24:31, Last seen 23:24:31, Avg confidence: 0.786
+
+DETAILED RECORDS:
+--------------------------------------------------
+personD - 23:22:58 - Present - Confidence: 0.846
+personG - 23:23:33 - Present - Confidence: 0.617
+personE - 23:23:45 - Present - Confidence: 0.831
+personA - 23:23:56 - Present - Confidence: 0.717
+personF - 23:24:04 - Present - Confidence: 0.823
+personG - 23:24:22 - Present - Confidence: 0.894
+personB - 23:24:31 - Present - Confidence: 0.786
