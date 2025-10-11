@@ -6,3 +6,5 @@ venv/
 
 # Python cache files
 __pycache__/
+
+attendance_reports/
