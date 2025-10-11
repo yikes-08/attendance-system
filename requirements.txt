@@ -1,9 +1,14 @@
-opencv-python==4.8.1.78
-opencv-contrib-python==4.8.1.78
-tensorflow==2.13.0
-numpy==1.24.3
-pandas==2.0.3
-Pillow==10.0.0
-scikit-learn==1.3.0
-keras-facenet==0.3.2
-tqdm==4.65.0
+# --- Core Vision + Math ---
+opencv-python
+numpy
+pandas
+Pillow
+tqdm
+
+# --- Deep Learning + Face Analysis ---
+insightface==0.7.3
+onnxruntime-gpu
+faiss-cpu
+
+# --- Optional tools ---
+scikit-learn

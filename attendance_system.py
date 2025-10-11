@@ -1,236 +1,163 @@
+# attendance_system.py
 import cv2
+import sqlite3
 import numpy as np
+from datetime import datetime
+import onnxruntime as ort
 import time
-import threading
-from datetime import datetime, timedelta
+import os
+
+from config import (
+    DATABASE_PATH,
+    CSV_FILENAME,
+    FACE_RECOGNITION_THRESHOLD,
+    ATTENDANCE_COOLDOWN
+)
 from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
-from database import AttendanceDatabase
-from email_notification import EmailNotifier
-from config import *
+from simple_tracker import SimpleTracker
+from db_writer import DBWriter
 
 class AttendanceSystem:
-    def __init__(self):
-        self.face_detector = FaceDetector()
-        self.face_recognizer = FaceRecognizer()
-        self.database = AttendanceDatabase()
-        self.email_notifier = EmailNotifier()
-        
-        # Load known faces from database
-        known_faces = self.database.get_known_faces()
-        self.face_recognizer.load_known_faces_from_database(known_faces)
-        
-        # Attendance tracking
-        self.last_attendance = {}  # Track last attendance time for each person
-        self.attendance_cooldown = ATTENDANCE_COOLDOWN
-        
-        # Email scheduling
-        self.last_email_sent = datetime.now()
-        self.email_interval = ATTENDANCE_EMAIL_INTERVAL
-        
-        # Camera
-        self.camera = None
-        self.is_running = False
-        
-        print("Attendance System initialized successfully")
-    
-    def initialize_camera(self):
-        """Initialize camera"""
+    def __init__(self, use_faiss=False):
+        # Auto-detect GPU
+        self.use_gpu = 'CUDAExecutionProvider' in ort.get_available_providers()
+        print(f"⚙️ Initializing in {'GPU' if self.use_gpu else 'CPU'} mode")
+
+        self.detector = FaceDetector(use_gpu=self.use_gpu)
+        self.recognizer = FaceRecognizer(use_gpu=self.use_gpu, use_faiss=use_faiss)
+
+        # tracker & writer
+        self.tracker = SimpleTracker(iou_thresh=0.3, max_idle=2.0)
+        self.db_writer = DBWriter()
+
+        # load known faces from database (robust to pickled lists or raw bytes)
+        self.known_faces = self.load_known_faces()
+        self.recognizer.load_known_faces_from_database(self.known_faces)
+
+        # short-term attendance control
+        self.attendance_log = {}  # person_id -> last marked datetime
+        print(f"[INFO] Loaded {len(self.known_faces)} enrolled faces ✅")
+
+        # recognition tuning
+        self.RECOG_PERIOD = 3      # do embedded recognition on new track or every RECOG_PERIOD track.age
+        self.VOTE_WINDOW = 3       # consider last VOTE_WINDOW recognitions per track
+        self.REQUIRED_VOTES = 2    # number of recognitions >= threshold to mark attendance
+
+    def load_known_faces(self):
+        """Load stored embeddings from SQLite. Handles both pickled-lists and legacy raw bytes."""
+        conn = sqlite3.connect(DATABASE_PATH)
+        cur = conn.cursor()
         try:
-            self.camera = cv2.VideoCapture(CAMERA_INDEX)
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            
-            if not self.camera.isOpened():
-                raise Exception("Could not open camera")
-            
-            print(f"Camera initialized successfully (Index: {CAMERA_INDEX})")
-            return True
-        except Exception as e:
-            print(f"Error initializing camera: {e}")
+            cur.execute("SELECT id, name, encoding FROM registered_faces")
+            rows = cur.fetchall()
+        except Exception:
+            # fallback to alternate table name or schema; return empty
+            rows = []
+        conn.close()
+
+        known_faces = {}
+        for pid, name, enc_bytes in rows:
+            # store as-is; FaceRecognizer will unpickle or fallback
+            known_faces[pid] = {"name": name, "encoding": enc_bytes}
+        return known_faces
+
+    def _should_mark(self, person_id):
+        now = datetime.now()
+        last = self.attendance_log.get(person_id)
+        if last and (now - last).total_seconds() < ATTENDANCE_COOLDOWN:
             return False
-    
-    def add_person(self, person_id, person_name, face_image):
-        """Add a new person to the system"""
-        try:
-            # Add face encoding to recognizer
-            success = self.face_recognizer.add_known_face(person_id, person_name, face_image)
-            
-            if success:
-                # Save to database
-                encoding = self.face_recognizer.known_faces[person_id]['encoding']
-                self.database.add_known_face(person_id, person_name, encoding)
-                print(f"Person {person_name} added successfully")
-                return True
-            else:
-                print(f"Failed to add person {person_name}")
-                return False
-        except Exception as e:
-            print(f"Error adding person: {e}")
-            return False
-    
-    def mark_attendance(self, person_id, person_name, confidence):
-        """Mark attendance for a person"""
-        current_time = datetime.now()
-        
-        # Check cooldown period
-        if person_id in self.last_attendance:
-            time_diff = (current_time - self.last_attendance[person_id]).total_seconds()
-            if time_diff < self.attendance_cooldown:
-                return False
-        
-        # Mark attendance
-        self.database.add_attendance_record(person_id, person_name, confidence)
-        self.last_attendance[person_id] = current_time
-        
-        print(f"Attendance marked for {person_name} at {current_time.strftime('%H:%M:%S')}")
-        
-        # Send immediate notification
-        self.email_notifier.send_immediate_notification(
-            person_name, 
-            current_time.strftime('%Y-%m-%d %H:%M:%S')
-        )
-        
         return True
-    
-    def process_frame(self, frame):
-        """Process a single frame for face detection and recognition"""
-        # Detect faces
-        faces = self.face_detector.detect_faces(frame)
-        
-        for face in faces:
-            # Extract face region
-            face_region = self.face_detector.extract_face_region(frame, face)
-            
-            if face_region is not None and face_region.size > 0:
-                # Recognize face
-                recognition_result, confidence = self.face_recognizer.recognize_face(face_region)
-                
-                if recognition_result:
-                    # Mark attendance
-                    self.mark_attendance(
-                        recognition_result['person_id'],
-                        recognition_result['person_name'],
-                        confidence
-                    )
-                    
-                    # Draw bounding box and label
-                    x, y, w, h = face['bbox']
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv2.putText(frame, f"{recognition_result['person_name']} ({confidence:.2f})", 
-                              (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                else:
-                    # Unknown face
-                    x, y, w, h = face['bbox']
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                    cv2.putText(frame, "Unknown", (x, y - 10), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        return frame
-    
-    def check_email_schedule(self):
-        """Check if it's time to send scheduled email"""
-        current_time = datetime.now()
-        if (current_time - self.last_email_sent).total_seconds() >= self.email_interval * 60:
-            # Send daily report
-            attendance_records = self.database.get_attendance_records()
-            if attendance_records:
-                self.email_notifier.send_attendance_report(attendance_records)
-                self.last_email_sent = current_time
-    
-    def run(self):
-        """Main loop for the attendance system"""
-        if not self.initialize_camera():
+
+    def _enqueue_mark(self, person_id, person_name, confidence):
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # update in-memory cooldown
+        self.attendance_log[person_id] = now
+        # enqueue asynchronous DB write
+        self.db_writer.enqueue(person_id, person_name, ts, confidence)
+        print(f"[MARKED] {person_name} @ {ts} ({confidence:.2f})")
+
+    def run(self, camera_index=0):
+        cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            print("❌ Cannot access camera")
             return
-        
-        self.is_running = True
-        print("Starting attendance system...")
-        print("Press 'q' to quit, 'a' to add new person, 's' to send report")
-        
-        while self.is_running:
-            ret, frame = self.camera.read()
-            if not ret:
-                print("Failed to read from camera")
-                break
-            
-            # Process frame
-            processed_frame = self.process_frame(frame)
-            
-            # Check email schedule
-            self.check_email_schedule()
-            
-            # Display frame
-            cv2.imshow('Attendance System', processed_frame)
-            
-            # Handle key presses
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('a'):
-                self.add_person_interactive(processed_frame)
-            elif key == ord('s'):
-                self.send_manual_report()
-        
-        self.cleanup()
-    
-    def add_person_interactive(self, frame):
-        """Interactive method to add a new person"""
-        print("Adding new person...")
-        person_id = input("Enter person ID: ")
-        person_name = input("Enter person name: ")
-        
-        # Detect faces in current frame
-        faces = self.face_detector.detect_faces(frame)
-        
-        if faces:
-            # Use the first detected face
-            face_region = self.face_detector.extract_face_region(frame, faces[0])
-            if face_region is not None:
-                success = self.add_person(person_id, person_name, face_region)
-                if success:
-                    print(f"Person {person_name} added successfully!")
-                else:
-                    print("Failed to add person. Please try again.")
-            else:
-                print("Could not extract face region. Please try again.")
-        else:
-            print("No face detected. Please position face in camera view and try again.")
-    
-    def send_manual_report(self):
-        """Send manual attendance report"""
-        print("Sending manual attendance report...")
-        attendance_records = self.database.get_attendance_records()
-        if attendance_records:
-            success = self.email_notifier.send_attendance_report(attendance_records)
-            if success:
-                print("Report sent successfully!")
-            else:
-                print("Failed to send report.")
-        else:
-            print("No attendance records found.")
-    
-    def cleanup(self):
-        """Cleanup resources"""
-        self.is_running = False
-        if self.camera:
-            self.camera.release()
-        cv2.destroyAllWindows()
-        print("Attendance system stopped.")
-    
-    def get_statistics(self):
-        """Get attendance statistics"""
-        records = self.database.get_attendance_records()
-        if not records:
-            return "No attendance records found."
-        
-        df = pd.DataFrame(records, columns=['Person ID', 'Person Name', 'Timestamp', 'Confidence'])
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-        
-        stats = {
-            'Total Records': len(df),
-            'Unique People': df['Person Name'].nunique(),
-            'Today Records': len(df[df['Timestamp'].dt.date == datetime.now().date()]),
-            'Last 7 Days': len(df[df['Timestamp'] >= datetime.now() - timedelta(days=7)])
-        }
-        
-        return stats
+
+        print("🎥 Starting Real-Time Attendance System (optimized)")
+        frame_count = 0
+        start_time = time.time()
+
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                frame_count += 1
+
+                # Detect faces on every frame (you can change to process_every_n_frames)
+                detections = self.detector.detect_faces(frame)  # returns list of {bbox, confidence, face_obj}
+                matches = self.tracker.update(detections)  # list of (Track, detection)
+
+                for track, det in matches:
+                    # only attempt recognition on new track or periodically
+                    do_recog = (not track.recognized) or (track.age % self.RECOG_PERIOD == 0)
+                    if do_recog:
+                        result, sim = self.recognizer.recognize_face(det)
+                        # store vote
+                        track.votes.append(sim)
+                        # trim votes
+                        if len(track.votes) > self.VOTE_WINDOW:
+                            track.votes = track.votes[-self.VOTE_WINDOW:]
+
+                        if result:
+                            # update track info
+                            track.name = result["person_name"]
+                            track.sim = sim
+                        else:
+                            # unknown; optionally keep sim for diagnostics
+                            track.sim = sim
+
+                        # check voting: count how many votes >= threshold
+                        positive_votes = sum(1 for v in track.votes if v >= FACE_RECOGNITION_THRESHOLD)
+                        if positive_votes >= self.REQUIRED_VOTES and track.name is not None:
+                            pid = result["person_id"] if result else None
+                            if pid is not None and self._should_mark(pid):
+                                # mark attendance asynchronously
+                                self._enqueue_mark(pid, track.name, float(track.sim))
+                                track.recognized = True  # prevent re-marking on same track
+
+                    # draw visual overlay
+                    x, y, w, h = det['bbox']
+                    if track.name:
+                        color = (0, 255, 0)
+                        text = f"{track.name} ({track.sim:.2f})"
+                    else:
+                        color = (0, 0, 255)
+                        text = f"Unknown ({track.sim:.2f})"
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                    cv2.putText(frame, text, (x, y - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+                # FPS counter
+                elapsed = time.time() - start_time
+                fps = frame_count / elapsed if elapsed > 0 else 0
+                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+                cv2.imshow("Face Attendance", frame)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        except KeyboardInterrupt:
+            print("\nInterrupted by user.")
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
+            # ensure writer stopped gracefully
+            try:
+                self.db_writer.stop()
+            except Exception:
+                pass
+            print("🟢 Attendance session ended")

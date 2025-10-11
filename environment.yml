@@ -1,0 +1,27 @@
+name: attendance-env
+channels:
+  - conda-forge
+  - nvidia   # Added for best cudatoolkit compatibility
+  - defaults
+dependencies:
+  # --- Core Python ---
+  - python=3.10
+  - pip
+
+  # --- GPU Foundation (Critical) ---
+  - cudatoolkit=11.8  # The low-level NVIDIA toolkit
+
+  # --- Main Libraries ---
+  - opencv
+  - numpy
+  - pandas
+  - pillow
+  - tqdm
+  - scikit-learn
+  - faiss-cpu
+  # REMOVED 'onnxruntime' from the Conda section
+
+  # --- Pip Packages ---
+  - pip:
+    - insightface==0.7.3
+    - onnxruntime-gpu==1.16.3  # ADDED the GPU version to be installed by pip

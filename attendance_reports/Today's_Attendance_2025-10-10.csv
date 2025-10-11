@@ -1,8 +1,0 @@
-Name,Attendance,Timestamp,Confidence,Video_Time
-personD,Present,2025-10-10 23:22:58,0.8458973,00:01
-personG,Present,2025-10-10 23:23:33,0.6170654,00:07
-personE,Present,2025-10-10 23:23:45,0.8308233,00:09
-personA,Present,2025-10-10 23:23:56,0.71680343,00:12
-personF,Present,2025-10-10 23:24:04,0.82308304,00:13
-personG,Present,2025-10-10 23:24:22,0.8939506,00:18
-personB,Present,2025-10-10 23:24:31,0.785565,00:19
