@@ -1,177 +1,205 @@
-## 📸 Face Biometric Attendance System
+# 🧠 Face Recognition Attendance System
 
-A robust, real-time solution for **automatic attendance marking** using advanced face detection and recognition. It leverages **YuNet** for fast face detection and **FaceNet** for accurate identification, complete with database storage, email reports, and an intuitive interface.
-
----
-
-## ✨ Key Features
-
-* **Real-time Processing**: Instantly detects faces using the **YuNet** model.
-* **Accurate Recognition**: Identifies personnel using **FaceNet** to match against known faces.
-* **Automatic Marking**: Records attendance instantly upon successful face recognition.
-* **Email Notifications**: Sends attendance records as **CSV** reports via email.
-* **Persistent Storage**: Uses an **SQLite database** to securely store attendance history and face encodings.
-* **Interactive Interface**: Simple-to-use controls for managing the system and enrolling new personnel.
+A **real-time, AI-powered attendance system** that uses **InsightFace** for face detection and recognition, enabling seamless and automated attendance marking.
+It supports **live camera feeds**, **video processing**, **email notifications**, and **SQLite + CSV storage** — optimized for both **CPU and GPU (CUDA)**.
 
 ---
 
-## 💻 Prerequisites
+## 🚀 Features
 
-To run the system, you'll need:
+✅ **Real-Time Face Detection & Recognition**
+Uses **InsightFace (buffalo_l)** model for robust detection and recognition.
 
-* **Python** (3.7+)
-* **OpenCV** (4.8+)
-* **TensorFlow** (2.13+)
-* A working **Camera**
-* **Email Configuration** (Gmail is recommended; requires an **App Password**)
+✅ **GPU Acceleration**
+Auto-detects and leverages **CUDA** via **ONNXRuntime GPU** if available.
+
+✅ **Automatic Attendance Marking**
+Detects and identifies known faces in live video or recorded footage.
+
+✅ **Database + CSV Storage**
+Stores all attendance data in **SQLite** and appends CSV logs automatically.
+
+✅ **Instant Email Notifications**
+Sends real-time and daily summary attendance reports via SMTP.
+
+✅ **Dataset Enrollment Utility**
+Enroll new faces from folder-based datasets with one command.
+
+✅ **Simple & Modular Codebase**
+Each component — detection, recognition, DB, tracker, and notifier — is cleanly separated for easy maintenance.
+
+---
+
+## 🧩 Project Architecture
+
+```
+attendance_system/
+├── attendance_system.py     # Main real-time attendance logic
+├── enroll_dataset.py        # Bulk face enrollment from dataset folders
+├── face_detection.py        # Face detection using InsightFace (RetinaFace)
+├── face_recognition.py      # Face recognition (ArcFace embeddings)
+├── db_writer.py             # Async attendance writer (DB + CSV + Email)
+├── email_notification.py    # Email report generation and sending
+├── simple_tracker.py        # Lightweight IOU-based tracker
+├── config.py                # All configuration and constants
+├── test_video.py            # Test attendance from pre-recorded video
+├── main.py                  # Entry point with CLI options
+├── requirements.txt         # Python dependencies
+└── environment.yml          # Conda environment configuration
+```
 
 ---
 
 ## ⚙️ Installation
 
-1.  **Get the Code**: Clone or download the project files.
-2.  **Run Setup**: Execute the setup script:
-    ```bash
-    python setup.py
-    ```
-3.  **Manual Dependencies (Optional)**: If the setup fails, install dependencies directly:
-    ```bash
-    pip install -r requirements.txt
-    ```
+### 1️⃣ Create Environment
+
+#### Option A: Using Conda
+
+```bash
+conda env create -f environment.yml
+conda activate attendance-env
+```
+
+#### Option B: Using Pip
+
+```bash
+python -m venv venv
+source venv/bin/activate   # or venv\Scripts\activate on Windows
+pip install -r requirements.txt
+```
 
 ---
 
-## 🔒 Configuration
+### 2️⃣ Configure Settings
 
-1.  **Update Email Settings**: Edit `config.py` with your email details:
-    ```python
-    EMAIL_ADDRESS = "your_email@gmail.com"
-    EMAIL_PASSWORD = "your_app_password"  # Important: Use a generated App Password for Gmail
-    ```
-2.  **Gmail Security**: If using Gmail, you must enable **2-factor authentication** and then **generate an app password** for the system to send emails.
+Open **`config.py`** and update your email credentials:
+
+```python
+EMAIL_ADDRESS = "your_email@gmail.com"
+EMAIL_PASSWORD = "your_app_password"
+```
+
+> ⚠️ **Important:**
+> For Gmail, enable **2FA** and use a generated **App Password** — not your regular email password.
+
+You can also adjust:
+
+* `FACE_RECOGNITION_THRESHOLD` — controls recognition sensitivity
+* `ATTENDANCE_COOLDOWN` — seconds before the same person can be re-marked
+* `CAMERA_INDEX` — use different camera sources
 
 ---
 
-## ▶️ Usage
+## 🧑‍💼 Usage
 
-### Starting the System
-
-To launch the real-time attendance system:
+### ▶️ Run the Real-Time Attendance System
 
 ```bash
 python main.py
-````
-
-### Command-Line Utilities
-
-Utilize optional arguments for specific tasks:
-
-| Command | Description |
-| :--- | :--- |
-| `python main.py --test-email` | Verify your email configuration |
-| `python main.py --send-report` | Manually trigger an attendance report |
-| `python main.py --stats` | Display attendance statistics |
-| `python main.py --camera 1` | Specify a different camera index (e.g., 1) |
-
-### Interactive Controls (While Running)
-
-Control the system directly within the camera view:
-
-  * Press **'q'** to **Quit** the application.
-  * Press **'a'** to **Add a new person**.
-  * Press **'s'** to **Send a manual attendance report**.
-
------
-
-## 🧑‍🎓 Adding New Personnel
-
-1.  Run the main system (`python main.py`).
-2.  Position the new person's face clearly in front of the camera.
-3.  Press the **'a'** key.
-4.  Enter the required **ID** and **Name** when prompted.
-
-The system will automatically capture the face and store its unique **FaceNet encoding** in the database.
-
------
-
-## 📧 Email Reports
-
-Attendance reports are sent in **CSV format** and include: **Person ID**, **Person Name**, **Timestamp**, and **Confidence Score**.
-
-  * **Immediate Notifications**: Sent when an individual is successfully marked present.
-  * **Scheduled Reports**: Sent automatically at configurable intervals.
-  * **Manual Reports**: Can be triggered anytime using the `'s'` key or `--send-report` option.
-
------
-
-## 🗄️ Database Structure (SQLite)
-
-### Attendance Table
-
-Records of every check-in:
-
-  * `id` (Primary Key)
-  * `person_id`
-  * `person_name`
-  * `timestamp`
-  * `confidence` (Recognition score)
-
-### Known Faces Table
-
-Stores identification data:
-
-  * `id` (Primary Key)
-  * `person_id` (Unique identifier for the person)
-  * `person_name`
-  * `face_encoding` (The stored FaceNet vector)
-  * `created_at`
-
------
-
-## ❓ Troubleshooting
-
-| Issue | Solution |
-| :--- | :--- |
-| **Camera** | Check connection, camera permissions, and try different indices (`--camera 0`, `1`, etc.). |
-| **Email** | Double-check `config.py` credentials, ensure you are using a **Gmail app password**, and verify SMTP settings. |
-| **Models** | Confirm internet access for the initial download, disk space, and file permissions. |
-| **Recognition** | Ensure bright, even lighting, a clear view of the face, and consider adding multiple face samples for better accuracy. |
-
------
-
-## 📁 Project Files
-
-```
-├── main.py                 # Application entry point
-├── attendance_system.py    # Core logic and flow
-├── face_detection.py       # YuNet implementation
-├── face_recognition.py     # FaceNet implementation
-├── database.py            # DB handling (SQLite)
-├── email_notification.py  # Email sending logic
-├── config.py              # Settings and credentials
-├── setup.py               # Setup script
-└── requirements.txt       # Python dependencies
 ```
 
------
+> Press **`q`** in the camera window to quit.
 
-## ⚡ Performance & Security
+---
 
-### Performance
+### 📚 Enroll New Faces from Dataset
 
-  * Includes a **cooldown period** to prevent redundant attendance marks.
-  * The face recognition **confidence threshold** can be adjusted in `config.py`.
-  * Database operations are optimized for speed in a real-time environment.
+Prepare a dataset like:
 
-### Security
+```
+datasets/
+├── Alice/
+│   ├── img1.jpg
+│   └── img2.jpg
+└── Bob/
+    ├── img1.jpg
+    └── img2.jpg
+```
 
-  * Face encodings are stored as **non-reversible binary data**.
-  * It's highly recommended to use **environment variables** for storing sensitive email credentials instead of directly in `config.py`.
-  * Ensure regular **database backups**.
+Then run:
 
------
+```bash
+python main.py --enroll ./datasets
+```
+
+---
+
+### 🎞️ Process a Recorded Video
+
+To analyze a saved video file and mark attendance automatically:
+
+```bash
+python main.py --test-video ./videos/meeting.mp4
+```
+
+Annotated output and attendance CSV will be saved in the `attendance_reports/` folder.
+
+---
+
+### 📧 Test Email Configuration
+
+```bash
+python main.py --test-email
+```
+
+---
+
+## 🗄️ Data Storage
+
+**SQLite Database (`attendance.db`)**
+
+* `registered_faces` — enrolled individuals and embeddings
+* `attendance` — daily attendance records
+
+**CSV Reports (`attendance_reports/`)**
+
+* Logs every attendance mark
+* Includes **PersonID, Name, Date, Time, Confidence**
+
+---
+
+## ⚡ Performance Tips
+
+* Use a **GPU** if available (`onnxruntime-gpu` will be used automatically).
+* Increase `RECOG_PERIOD` in `attendance_system.py` for higher FPS.
+* Add multiple face samples per person for better recognition accuracy.
+
+---
+
+## 🔒 Security Recommendations
+
+* Never hardcode passwords — use **environment variables**.
+* Restrict access to `attendance.db` and CSV files.
+* Regularly backup the database and reports.
+
+---
+
+## 🧠 Technologies Used
+
+| Component                    | Library                                                   |
+| ---------------------------- | --------------------------------------------------------- |
+| Face Detection & Recognition | [InsightFace](https://github.com/deepinsight/insightface) |
+| Model Runtime                | ONNXRuntime (GPU/CPU)                                     |
+| Tracking                     | Custom IOU-based tracker                                  |
+| Storage                      | SQLite + CSV                                              |
+| Notifications                | smtplib (Email)                                           |
+| Visualization                | OpenCV                                                    |
+| Embedding Management         | NumPy, Pickle                                             |
+
+---
+
+## 🧪 Testing
+
+The `testing/` folder includes quick validation scripts:
+
+```bash
+python testing/test_insightface_models.py  # Downloads and validates models
+python testing/test_insightface.py         # Verifies face detection pipeline
+```
+
+---
 
 ## 📝 License
 
-This project is freely available under the **MIT License**.
-
+This project is licensed under the **MIT License** — free for personal and commercial use.
