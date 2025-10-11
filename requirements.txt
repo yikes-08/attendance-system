@@ -1,0 +1,14 @@
+# --- Core Vision + Math ---
+opencv-python
+numpy
+pandas
+Pillow
+tqdm
+
+# --- Deep Learning + Face Analysis ---
+insightface==0.7.3
+onnxruntime-gpu
+faiss-cpu
+
+# --- Optional tools ---
+scikit-learn
