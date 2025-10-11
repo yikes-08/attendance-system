@@ -1,33 +1,36 @@
+# face_recognition.py
 import numpy as np
-from insightface.model_zoo import get_model
+from insightface.app import FaceAnalysis
 from config import FACE_RECOGNITION_THRESHOLD
 
 class FaceRecognizer:
     """
-    ArcFace-based embedding + similarity comparison
+    InsightFace FaceAnalysis wrapper (RetinaFace + ArcFace embedding)
     """
 
-    def __init__(self):
-        # Load ArcFace model from buffalo_l pack (InsightFace)
-        self.model = get_model('arcface_r100_v1', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        self.model.prepare(ctx_id=0)
+    def __init__(self, use_gpu=True):
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
+
+        # Initialize the combined model (detection + embedding)
+        self.model = FaceAnalysis(name='buffalo_l', providers=providers)
+        self.model.prepare(ctx_id=0, det_size=(640, 640))
         self.known_faces = []
 
-    def get_face_encoding(self, face_obj):
+    def get_face_embedding(self, face_obj):
         """
-        Extract 512-D embedding vector from a detected/Aligned face object
+        Extract 512-D embedding vector from a detected face object.
         """
         if not hasattr(face_obj, 'normed_embedding'):
             return None
-        emb = face_obj.normed_embedding.astype(np.float32)
-        return emb
+        return face_obj.normed_embedding.astype(np.float32)
 
     def load_known_faces_from_database(self, known_faces):
         """
         Accept dict of {id: {'name', 'encoding'}} from SQLite
         """
         self.known_faces = [
-            (pid, data["name"], data["encoding"]) for pid, data in known_faces.items()
+            (pid, data["name"], np.array(data["encoding"], dtype=np.float32))
+            for pid, data in known_faces.items()
         ]
 
     def recognize_face(self, face):
@@ -37,13 +40,15 @@ class FaceRecognizer:
         if not self.known_faces:
             return None, 0.0
 
-        emb = self.get_face_encoding(face['face_obj'])
+        emb = self.get_face_embedding(face['face_obj'])
         if emb is None:
             return None, 0.0
 
         similarities = []
         for pid, name, known_emb in self.known_faces:
-            sim = np.dot(emb, known_emb) / (np.linalg.norm(emb) * np.linalg.norm(known_emb) + 1e-9)
+            sim = np.dot(emb, known_emb) / (
+                np.linalg.norm(emb) * np.linalg.norm(known_emb) + 1e-9
+            )
             similarities.append((pid, name, sim))
 
         pid, name, best_sim = max(similarities, key=lambda x: x[2])

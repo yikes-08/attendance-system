@@ -1,4 +1,5 @@
 import os
+import onnxruntime
 
 # Database configuration
 DATABASE_PATH = "attendance.db"
@@ -15,7 +16,12 @@ FACE_RECOGNITION_THRESHOLD = 0.45      # cosine similarity threshold (ArcFace em
 ATTENDANCE_COOLDOWN = 30               # seconds between attendance marks for same person
 
 # InsightFace settings
-INSIGHTFACE_PROVIDER = ['CUDAExecutionProvider']  # or ['CPUExecutionProvider'] if no GPU
+if 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
+    INSIGHTFACE_PROVIDER = ['CUDAExecutionProvider']
+    print("✅ [INFO] GPU is available. Using CUDAExecutionProvider for InsightFace.")
+else:
+    INSIGHTFACE_PROVIDER = ['CPUExecutionProvider']
+    print("⚠️ [INFO] GPU not found. Using CPUExecutionProvider for InsightFace.")
 INSIGHTFACE_DET_SIZE = (640, 640)
 INSIGHTFACE_MODEL_NAME = 'buffalo_l'   # high-quality, reasonable speed; InsightFace will auto-download
 
