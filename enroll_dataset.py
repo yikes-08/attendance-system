@@ -3,6 +3,7 @@ import os
 import cv2
 import numpy as np
 import sqlite3
+import pickle
 from tqdm import tqdm
 from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
@@ -17,17 +18,24 @@ def create_database():
         CREATE TABLE IF NOT EXISTS registered_faces (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            encoding BLOB NOT NULL
+            encoding BLOB NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
     conn.close()
 
 def store_embeddings_bulk(data):
-    """Store multiple embeddings (name, embedding) in one transaction"""
+    """
+    Store multiple embeddings (name, pickled_embeddings_bytes) in one transaction.
+    data: [(name, pickled_embeddings_bytes), ...]
+    """
     conn = sqlite3.connect(DATABASE_PATH)
     cur = conn.cursor()
-    cur.executemany("INSERT INTO registered_faces (name, encoding) VALUES (?, ?)", data)
+    cur.executemany(
+        "INSERT INTO registered_faces (name, encoding) VALUES (?, ?)",
+        data
+    )
     conn.commit()
     conn.close()
 
@@ -45,6 +53,7 @@ def enroll_from_folder(dataset_root):
         img1.jpg ...
       person2/
         img1.jpg ...
+    This stores a PICKLED LIST of normalized embeddings for each person.
     """
     # --- Setup environment ---
     create_database()
@@ -52,7 +61,7 @@ def enroll_from_folder(dataset_root):
     print(f"⚙️ Using {'GPU' if use_gpu else 'CPU'} mode for enrollment")
 
     detector = FaceDetector(use_gpu=use_gpu)
-    recognizer = FaceRecognizer()
+    recognizer = FaceRecognizer(use_gpu=use_gpu)
 
     persons = [p for p in os.listdir(dataset_root)
                if os.path.isdir(os.path.join(dataset_root, p))]
@@ -67,7 +76,7 @@ def enroll_from_folder(dataset_root):
             continue
 
         embeddings = []
-        for img_path in tqdm(image_files, desc=f"Processing {person_name}"):
+        for img_path in tqdm(image_files, desc=f"Processing {person_name}", unit="img"):
             img = cv2.imread(img_path)
             if img is None:
                 continue
@@ -76,17 +85,19 @@ def enroll_from_folder(dataset_root):
             if not faces:
                 continue
 
+            # pick highest-confidence detection
             faces.sort(key=lambda f: f['confidence'], reverse=True)
-            emb = recognizer.get_face_embedding(faces[0]['face_obj'])
+            face_obj = faces[0]['face_obj']
+            emb = recognizer.get_face_embedding(face_obj)
             if emb is not None:
                 emb = emb / (np.linalg.norm(emb) + 1e-9)  # normalize
-                embeddings.append(emb)
+                embeddings.append(emb.astype(np.float32))
 
         if embeddings:
-            mean_emb = np.mean(embeddings, axis=0)
-            mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-9)
-            all_to_store.append((person_name, mean_emb.tobytes()))
-            print(f"[+] Stored {person_name} with {len(embeddings)} images")
+            # Optionally: augment or deduplicate embeddings here
+            serialized = pickle.dumps(embeddings)
+            all_to_store.append((person_name, serialized))
+            print(f"[+] Stored {person_name} with {len(embeddings)} embeddings")
         else:
             print(f"[!] No valid faces found for {person_name}")
 

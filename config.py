@@ -7,8 +7,8 @@ DATABASE_PATH = "attendance.db"
 # Email configuration
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-EMAIL_ADDRESS = "sahuyash160@gmail.com"  # Change this to your email
-EMAIL_PASSWORD = "mrvg yqvp gxvp sxyb"    # Change this to your app password
+EMAIL_ADDRESS = "unown20th@gmail.com"  # Change this to your email
+EMAIL_PASSWORD = "dogdooeklekeunown"    # Change this to your app password
 
 # Face detection and recognition settings
 FACE_DETECTION_CONFIDENCE = 0.45        # detection confidence threshold
@@ -27,7 +27,8 @@ INSIGHTFACE_MODEL_NAME = 'buffalo_l'   # high-quality, reasonable speed; Insight
 
 # Database / paths
 DATABASE_PATH = "attendance.db"
-CSV_FILENAME = "attendance_records.csv"
+CSV_FILENAME = os.path.join("attendance_reports", "attendance_records.csv")
+os.makedirs("attendance_reports", exist_ok=True)
 
 # Camera settings
 CAMERA_INDEX = 0  # Default camera index
