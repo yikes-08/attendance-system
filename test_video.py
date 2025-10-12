@@ -1,4 +1,4 @@
-# test_video.py (fixed bbox handling)
+# test_video.py
 import cv2
 import os
 import sys
@@ -14,13 +14,11 @@ from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
 from simple_tracker import SimpleTracker
 from db_writer import DBWriter
-from config import DATABASE_PATH, ATTENDANCE_COOLDOWN, CSV_FILENAME, FACE_RECOGNITION_THRESHOLD
-
+from config import DATABASE_PATH, ATTENDANCE_COOLDOWN, FACE_RECOGNITION_THRESHOLD
 
 class VideoTester:
     def __init__(self, use_faiss=False):
-        print("[INFO] Initializing video tester (optimized)...")
-        # try to detect GPU via onnxruntime available providers
+        print("[INFO] Initializing video tester...")
         try:
             import onnxruntime as ort
             has_cuda = 'CUDAExecutionProvider' in ort.get_available_providers()
@@ -29,9 +27,14 @@ class VideoTester:
 
         self.detector = FaceDetector(use_gpu=has_cuda)
         self.recognizer = FaceRecognizer(use_gpu=has_cuda, use_faiss=use_faiss)
-
         self.tracker = SimpleTracker(iou_thresh=0.3, max_idle=2.0)
-        self.db_writer = DBWriter()
+        
+        # Generate a unique CSV for the background writer
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        db_writer_csv_path = os.path.join("attendance_reports", f"Video_Processing_Log_{timestamp}.csv")
+        
+        # Pass the unique path to the DBWriter
+        self.db_writer = DBWriter(csv_path=db_writer_csv_path)
         self.attendance_records = []
         self.last_seen = {}
 
@@ -40,11 +43,11 @@ class VideoTester:
         self.recognizer.load_known_faces_from_database(self.known_faces)
 
         if not self.known_faces:
-            print("⚠️ [WARNING] No enrolled faces found in the database. Please run `python enroll_dataset.py` first.")
+            print("⚠️ [WARNING] No enrolled faces found. Please run enrollment first.")
         else:
             print(f"✅ Loaded {len(self.known_faces)} known faces from database.")
 
-        # recognition tuning
+        # Recognition tuning
         self.RECOG_PERIOD = 3
         self.VOTE_WINDOW = 3
         self.REQUIRED_VOTES = 2
@@ -64,59 +67,6 @@ class VideoTester:
             known_faces[pid] = {"name": name, "encoding": enc_bytes}
         return known_faces
 
-    def _extract_bbox(self, det, frame_shape):
-        """
-        Return (x, y, w, h) as ints.
-        Handles:
-          - detector dicts with 'bbox' already as (x,y,w,h)
-          - legacy/other formats (x1,y1,x2,y2) → converted to w,h
-          - list/tuple/ndarray formats with heuristic fallback
-        """
-        h_frame, w_frame = frame_shape[:2]
-
-        # dict with 'bbox'
-        if isinstance(det, dict) and "bbox" in det:
-            bx = det["bbox"]
-            if len(bx) >= 4:
-                x, y, w, h = map(int, bx[:4])
-                # If bbox looks like x1,y1,x2,y2 (x2 > x1 and x2 within frame), convert
-                if w > w_frame or h > h_frame or (w > 0 and h > 0 and (x + w) > w_frame or (y + h) > h_frame):
-                    # maybe stored as x1,y1,x2,y2
-                    x1, y1, x2, y2 = x, y, w, h
-                    w = max(0, x2 - x1)
-                    h = max(0, y2 - y1)
-                    x, y = x1, y1
-                return max(0, x), max(0, y), max(0, w), max(0, h)
-
-        # list/tuple/ndarray fallback
-        if isinstance(det, (list, tuple, np.ndarray)):
-            if len(det) >= 4:
-                x1, y1, a3, a4 = map(int, det[:4])
-                # heuristics: if a3,a4 are coordinates within frame and greater than x1,y1 -> treat as x2,y2
-                if (0 <= a3 <= w_frame and 0 <= a4 <= h_frame and a3 > x1 and a4 > y1):
-                    x, y = x1, y1
-                    w = max(0, a3 - x1)
-                    h = max(0, a4 - y1)
-                    return x, y, w, h
-                else:
-                    # treat a3,a4 as w,h
-                    return max(0, x1), max(0, y1), max(0, a3), max(0, a4)
-
-        # object with .bbox (e.g., insightface face obj)
-        if hasattr(det, "bbox"):
-            try:
-                bx = list(map(int, det.bbox))
-                if len(bx) == 4:
-                    x1, y1, x2, y2 = bx
-                    w = max(0, x2 - x1)
-                    h = max(0, y2 - y1)
-                    return max(0, x1), max(0, y1), w, h
-            except Exception:
-                pass
-
-        # give a safe empty bbox if nothing matches
-        return 0, 0, 0, 0
-
     def process_video(self, video_path, output_dir="attendance_reports"):
         if not os.path.exists(video_path):
             print(f"❌ Video file not found: {video_path}")
@@ -130,12 +80,12 @@ class VideoTester:
             return
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25  # fallback to 25 if fps is 0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Optional: save annotated video
-        output_video_path = os.path.join(output_dir, "annotated_output.mp4")
+        # Setup for saving annotated video output
+        output_video_path = os.path.join(output_dir, f"annotated_{os.path.basename(video_path)}")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
@@ -147,24 +97,20 @@ class VideoTester:
 
                 detections = self.detector.detect_faces(frame)
                 
-                # --- ✅ FIX: Pass frame.shape to the tracker update method ---
+                # Pass frame.shape to the tracker update method
                 matches = self.tracker.update(detections, frame.shape)
 
                 for track, det in matches:
-                    # Extract bbox as (x, y, w, h)
-                    x, y, w, h = self._extract_bbox(det, frame.shape)
-
-                    # draw rectangle using x,y,w,h
+                    x, y, w, h = det['bbox']
                     color = (0, 255, 0) if getattr(track, "recognized", False) else (0, 0, 255)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
 
-                    # Label text: include tracker ID
                     label = f"ID {track.id}: " + (track.name if getattr(track, "name", None) else "Unknown")
                     conf = getattr(track, "sim", 0.0)
                     cv2.putText(frame, f"{label} ({conf:.2f})", (x, max(15, y - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                    # Recognition
+                    # Recognition logic
                     do_recog = (not track.recognized) or (track.age % self.RECOG_PERIOD == 0)
                     if do_recog:
                         result, sim = self.recognizer.recognize_face(det)
@@ -196,12 +142,11 @@ class VideoTester:
                                     self.db_writer.enqueue(pid, track.name, rec["Timestamp"], rec["Confidence"])
                                     track.recognized = True
 
-                # --- Display live frame and save video ---
-                cv2.imshow("Test Video - Face Recognition", frame)
                 out_writer.write(frame)
-
+                # cv2.imshow("Test Video - Face Recognition", frame) # Optional: comment out for faster processing
+                
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    print("\n🛑 Video manually stopped.")
+                    print("\n🛑 Video processing stopped manually.")
                     break
 
                 pbar.update(1)
@@ -216,7 +161,7 @@ class VideoTester:
 
     def save_report(self, output_dir):
         if not self.attendance_records:
-            print("🤷 No attendance records detected.")
+            print("🤷 No attendance records were detected.")
             return
 
         df = pd.DataFrame(self.attendance_records)
@@ -226,7 +171,6 @@ class VideoTester:
 
         print(f"📊 Saved attendance report: {file_path}")
         print(f"  → Total Records: {len(df)} | Unique People: {df['Name'].nunique()}")
-
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

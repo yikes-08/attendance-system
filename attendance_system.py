@@ -9,7 +9,6 @@ import os
 
 from config import (
     DATABASE_PATH,
-    CSV_FILENAME,
     FACE_RECOGNITION_THRESHOLD,
     ATTENDANCE_COOLDOWN
 )
@@ -43,7 +42,6 @@ class DynamicFrameSkipper:
         return False
 
 class AttendanceSystem:
-    # __init__, load_known_faces, _should_mark, _enqueue_mark methods remain unchanged.
     def __init__(self, use_faiss=False):
         # Auto-detect GPU
         self.use_gpu = 'CUDAExecutionProvider' in ort.get_available_providers()
@@ -52,27 +50,33 @@ class AttendanceSystem:
         self.detector = FaceDetector(use_gpu=self.use_gpu)
         self.recognizer = FaceRecognizer(use_gpu=self.use_gpu, use_faiss=use_faiss)
 
-        # tracker & writer
+        # Tracker and Frame Skipper
         self.tracker = SimpleTracker(iou_thresh=0.3, max_idle=2.0)
-        self.db_writer = DBWriter()
-        
-        # --- 🧠 Dynamic Frame Skipper ---
         self.frame_skipper = DynamicFrameSkipper(fast_rate=2, slow_rate=5)
 
-        # load known faces from database
+        # Generate a unique CSV filename for this session
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        session_csv_path = os.path.join("attendance_reports", f"Attendance_Log_{timestamp}.csv")
+        print(f"📝 This session's attendance log will be saved to: {session_csv_path}")
+
+        # Pass the unique path to the background DBWriter
+        self.db_writer = DBWriter(csv_path=session_csv_path)
+
+        # Load known faces from the database
         self.known_faces = self.load_known_faces()
         self.recognizer.load_known_faces_from_database(self.known_faces)
 
-        # short-term attendance control
+        # In-memory log for quick cooldown checks within a single session
         self.attendance_log = {}
         print(f"[INFO] Loaded {len(self.known_faces)} enrolled faces ✅")
 
-        # recognition tuning
+        # Recognition tuning parameters
         self.RECOG_PERIOD = 3
         self.VOTE_WINDOW = 3
         self.REQUIRED_VOTES = 2
 
     def load_known_faces(self):
+        """Load stored embeddings from the SQLite database."""
         conn = sqlite3.connect(DATABASE_PATH)
         cur = conn.cursor()
         try:
@@ -88,16 +92,51 @@ class AttendanceSystem:
         return known_faces
 
     def _should_mark(self, person_id):
+        """
+        Check if a person should be marked for attendance.
+        This is PERSISTENT, checking the database for the last entry to prevent
+        duplicate markings across application restarts.
+        """
         now = datetime.now()
-        last = self.attendance_log.get(person_id)
-        if last and (now - last).total_seconds() < ATTENDANCE_COOLDOWN:
+        
+        # 1. Quick check using in-memory log for the current session
+        last_in_memory = self.attendance_log.get(person_id)
+        if last_in_memory and (now - last_in_memory).total_seconds() < ATTENDANCE_COOLDOWN:
             return False
+
+        # 2. Persistent check using the database
+        try:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT date, time FROM attendance WHERE person_id = ? ORDER BY id DESC LIMIT 1",
+                (person_id,)
+            )
+            row = cur.fetchone()
+            conn.close()
+
+            if row:
+                last_date, last_time = row
+                last_timestamp_str = f"{last_date} {last_time}"
+                last_timestamp = datetime.strptime(last_timestamp_str, "%Y-%m-%d %H:%M:%S")
+
+                if (now - last_timestamp).total_seconds() < ATTENDANCE_COOLDOWN:
+                    return False
+
+        except Exception as e:
+            print(f"⚠️ Database check error in _should_mark: {e}")
+
         return True
 
     def _enqueue_mark(self, person_id, person_name, confidence):
+        """Adds a new attendance record to the background writer queue."""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Update in-memory log for the current session
         self.attendance_log[person_id] = now
+        
+        # Enqueue for asynchronous database and CSV writing
         self.db_writer.enqueue(person_id, person_name, ts, confidence)
         print(f"[MARKED] {person_name} @ {ts} ({confidence:.2f})")
 
@@ -107,11 +146,11 @@ class AttendanceSystem:
             print("❌ Cannot access camera")
             return
 
-        print("🎥 Starting Real-Time Attendance System (Optimized with ROI + Dynamic Skip)")
+        print("🎥 Starting Real-Time Attendance System (Fully Optimized)")
         frame_count = 0
         start_time = time.time()
         
-        # Store last known bounding boxes to draw on skipped frames
+        # Store last known bounding boxes to draw on skipped frames for a smooth display
         last_known_boxes = {}
 
         try:
@@ -122,26 +161,30 @@ class AttendanceSystem:
                 
                 frame_count +=1
 
-                # --- 🧠 Dynamic Frame Skipping Logic ---
+                # Use the dynamic skipper to decide if we should process this frame
                 if self.frame_skipper.should_process():
                     detections = []
+                    
+                    # Use ROI tracking if available
                     combined_roi = self.tracker.get_combined_roi()
-
                     if combined_roi:
                         x1, y1, x2, y2 = combined_roi
                         if x1 < x2 and y1 < y2:
                             roi_frame = frame[y1:y2, x1:x2]
                             detections_raw = self.detector.detect_faces(roi_frame)
+                            # Convert ROI-based coordinates back to full frame coordinates
                             for det in detections_raw:
                                 x, y, w, h = det['bbox']
                                 det['bbox'] = (x + x1, y + y1, w, h)
                                 detections.append(det)
                     else:
+                        # Fallback to full frame scan if no faces are tracked
                         detections = self.detector.detect_faces(frame)
 
+                    # Update the tracker with new detections
                     matches = self.tracker.update(detections, frame.shape)
                     
-                    # Update skipper with current tracking status
+                    # Inform the skipper if we are actively tracking faces
                     self.frame_skipper.update_status(bool(self.tracker.tracks))
 
                     current_boxes = {}
@@ -159,6 +202,7 @@ class AttendanceSystem:
                             else:
                                 track.sim = sim
 
+                            # Use voting system for reliable recognition
                             positive_votes = sum(1 for v in track.votes if v >= FACE_RECOGNITION_THRESHOLD)
                             if positive_votes >= self.REQUIRED_VOTES and track.name is not None:
                                 pid = result["person_id"] if result else None
@@ -169,18 +213,15 @@ class AttendanceSystem:
                         current_boxes[track.id] = (det['bbox'], track.name, track.sim)
                     last_known_boxes = current_boxes
 
-                # --- Draw on EVERY frame using last known data for a smooth display ---
+                # Draw on EVERY frame for a smooth visual experience
                 for track_id, (bbox, name, sim) in last_known_boxes.items():
                     x, y, w, h = bbox
-                    if name:
-                        color = (0, 255, 0)
-                        text = f"{name} ({sim:.2f})"
-                    else:
-                        color = (0, 0, 255)
-                        text = f"Unknown ({sim:.2f})"
+                    color = (0, 255, 0) if name else (0, 0, 255)
+                    text = f"{name} ({sim:.2f})" if name else f"Unknown ({sim:.2f})"
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                     cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
+                # Display FPS
                 elapsed = time.time() - start_time
                 fps = frame_count / elapsed if elapsed > 0 else 0
                 cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
