@@ -146,7 +146,9 @@ class VideoTester:
                     break
 
                 detections = self.detector.detect_faces(frame)
-                matches = self.tracker.update(detections)
+                
+                # --- ✅ FIX: Pass frame.shape to the tracker update method ---
+                matches = self.tracker.update(detections, frame.shape)
 
                 for track, det in matches:
                     # Extract bbox as (x, y, w, h)

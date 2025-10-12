@@ -8,7 +8,7 @@ DATABASE_PATH = "attendance.db"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 EMAIL_ADDRESS = "unown20th@gmail.com"  # Change this to your email
-EMAIL_PASSWORD = "dogdooeklekeunown"    # Change this to your app password
+EMAIL_PASSWORD = "jkpx zcwh dzvx shmi"    # Change this to your app password
 
 # Face detection and recognition settings
 FACE_DETECTION_CONFIDENCE = 0.45        # detection confidence threshold
