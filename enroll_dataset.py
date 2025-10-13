@@ -1,113 +1,105 @@
-# enroll_dataset.py
-import os
 import cv2
-import numpy as np
+import os
+import sys
 import sqlite3
 import pickle
+import numpy as np
 from tqdm import tqdm
+
+# Ensure local modules can be imported
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from config import DATABASE_PATH, FACE_DETECTION_CONFIDENCE
 from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
-from config import DATABASE_PATH
-import onnxruntime as ort
 
-def create_database():
-    """Create SQLite database and table if not exists"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS registered_faces (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            encoding BLOB NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+class DatasetEnroller:
+    def __init__(self):
+        try:
+            import onnxruntime as ort
+            has_cuda = 'CUDAExecutionProvider' in ort.get_available_providers()
+        except Exception:
+            has_cuda = False
+            
+        self.detector = FaceDetector(use_gpu=has_cuda)
+        self.recognizer = FaceRecognizer(use_gpu=has_cuda)
+        self.conn = sqlite3.connect(DATABASE_PATH)
+        self.cur = self.conn.cursor()
+        self.setup_database()
 
-def store_embeddings_bulk(data):
-    """
-    Store multiple embeddings (name, pickled_embeddings_bytes) in one transaction.
-    data: [(name, pickled_embeddings_bytes), ...]
-    """
-    conn = sqlite3.connect(DATABASE_PATH)
-    cur = conn.cursor()
-    cur.executemany(
-        "INSERT INTO registered_faces (name, encoding) VALUES (?, ?)",
-        data
-    )
-    conn.commit()
-    conn.close()
+    def setup_database(self):
+        self.cur.execute("""
+            CREATE TABLE IF NOT EXISTS registered_faces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                encoding BLOB NOT NULL,
+                UNIQUE(name)
+            )
+        """)
+        self.conn.commit()
 
-def load_images_from_folder(folder_path):
-    """Load all image paths in folder"""
-    exts = ('.jpg', '.jpeg', '.png')
-    return [os.path.join(folder_path, f)
-            for f in os.listdir(folder_path)
-            if f.lower().endswith(exts)]
+    def enroll_from_directory(self, dataset_path):
+        if not os.path.isdir(dataset_path):
+            print(f"❌ Error: Directory not found at {dataset_path}")
+            return
 
-def enroll_from_folder(dataset_root):
-    """
-    dataset_root/
-      person1/
-        img1.jpg ...
-      person2/
-        img1.jpg ...
-    This stores a PICKLED LIST of normalized embeddings for each person.
-    """
-    # --- Setup environment ---
-    create_database()
-    use_gpu = 'CUDAExecutionProvider' in ort.get_available_providers()
-    print(f"⚙️ Using {'GPU' if use_gpu else 'CPU'} mode for enrollment")
+        person_folders = [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
+        
+        print(f"Found {len(person_folders)} people to enroll...")
 
-    detector = FaceDetector(use_gpu=use_gpu)
-    recognizer = FaceRecognizer(use_gpu=use_gpu)
+        for person_name in tqdm(person_folders, desc="Enrolling People"):
+            person_path = os.path.join(dataset_path, person_name)
+            image_files = [f for f in os.listdir(person_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    persons = [p for p in os.listdir(dataset_root)
-               if os.path.isdir(os.path.join(dataset_root, p))]
-
-    all_to_store = []
-
-    for person_name in persons:
-        folder = os.path.join(dataset_root, person_name)
-        image_files = load_images_from_folder(folder)
-        if not image_files:
-            print(f"⚠️ No images found for {person_name}")
-            continue
-
-        embeddings = []
-        for img_path in tqdm(image_files, desc=f"Processing {person_name}", unit="img"):
-            img = cv2.imread(img_path)
-            if img is None:
+            if not image_files:
+                print(f"⚠️ No images found for {person_name}, skipping.")
                 continue
 
-            faces = detector.detect_faces(img)
-            if not faces:
-                continue
+            person_embeddings = []
+            for image_file in image_files:
+                image_path = os.path.join(person_path, image_file)
+                image = cv2.imread(image_path)
+                if image is None:
+                    print(f"⚠️ Failed to read {image_path}, skipping.")
+                    continue
+                
+                detections = self.detector.detect_faces(image)
+                if detections:
+                    # Use the first and most confident detection
+                    best_detection = detections[0]
+                    if best_detection['det_score'] > FACE_DETECTION_CONFIDENCE:
+                        embedding = self.recognizer.get_embedding(best_detection)
+                        if embedding is not None:
+                            person_embeddings.append(embedding)
 
-            # pick highest-confidence detection
-            faces.sort(key=lambda f: f['confidence'], reverse=True)
-            face_obj = faces[0]['face_obj']
-            emb = recognizer.get_face_embedding(face_obj)
-            if emb is not None:
-                emb = emb / (np.linalg.norm(emb) + 1e-9)  # normalize
-                embeddings.append(emb.astype(np.float32))
+            if person_embeddings:
+                # Serialize the list of embeddings using pickle
+                embeddings_blob = pickle.dumps(person_embeddings)
+                
+                try:
+                    self.cur.execute(
+                        "INSERT OR REPLACE INTO registered_faces (name, encoding) VALUES (?, ?)",
+                        (person_name, embeddings_blob)
+                    )
+                    self.conn.commit()
+                except sqlite3.Error as e:
+                    print(f"❌ Database error for {person_name}: {e}")
+            else:
+                print(f"⚠️ Could not generate any valid embeddings for {person_name}.")
+        
+        print("\n✅ Enrollment process completed.")
+        self.conn.close()
 
-        if embeddings:
-            # Optionally: augment or deduplicate embeddings here
-            serialized = pickle.dumps(embeddings)
-            all_to_store.append((person_name, serialized))
-            print(f"[+] Stored {person_name} with {len(embeddings)} embeddings")
-        else:
-            print(f"[!] No valid faces found for {person_name}")
+# ✅ NEW: Create the function that main.py will import
+def enroll_new_user(dataset_path):
+    """
+    Main function to handle the enrollment process.
+    """
+    enroller = DatasetEnroller()
+    enroller.enroll_from_directory(dataset_path)
 
-    # --- Commit all at once ---
-    if all_to_store:
-        store_embeddings_bulk(all_to_store)
-        print(f"✅ Enrollment complete — {len(all_to_store)} persons registered")
+if __name__ == '__main__':
+    # This block allows the script to still be run directly
+    if len(sys.argv) > 1:
+        enroll_new_user(sys.argv[1])
     else:
-        print("⚠️ No embeddings to store!")
-
-if __name__ == "__main__":
-    dataset_root = input("Enter dataset folder path (e.g. ./datasets): ").strip()
-    enroll_from_folder(dataset_root)
+        print("Usage: python enroll_dataset.py <path_to_dataset_directory>")

@@ -16,6 +16,7 @@ from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
 from simple_tracker import SimpleTracker
 from db_writer import DBWriter
+from realsense_camera import RealSenseCamera  # Import the new camera class
 
 class DynamicFrameSkipper:
     def __init__(self, fast_rate=2, slow_rate=5):
@@ -50,7 +51,6 @@ class AttendanceSystem:
         self.known_faces = self.load_known_faces()
         self.recognizer.load_known_faces_from_database(self.known_faces)
 
-        # --- ✅ SOLUTION: Create a set to track people marked in this session ---
         self.marked_this_session = set()
         print(f"[INFO] Loaded {len(self.known_faces)} enrolled faces ✅")
 
@@ -73,15 +73,8 @@ class AttendanceSystem:
         return known_faces
 
     def _should_mark(self, person_id):
-        """
-        Prevents a person from being marked more than once per session.
-        """
-        # --- ✅ SOLUTION: The primary check. If already marked, stop. ---
         if person_id in self.marked_this_session:
             return False
-        
-        # The time-based cooldown is now a secondary check, mainly for persistence
-        # if the app restarts very quickly, but the set is the main guard.
         try:
             conn = sqlite3.connect(DATABASE_PATH)
             cur = conn.cursor()
@@ -97,22 +90,25 @@ class AttendanceSystem:
                     return False
         except Exception as e:
             print(f"⚠️ Database check error in _should_mark: {e}")
-
         return True
 
     def _enqueue_mark(self, person_id, person_name, confidence):
-        """Adds a new attendance record and logs the person as marked for this session."""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # --- ✅ SOLUTION: Add the person's ID to the set to prevent re-marking ---
         self.marked_this_session.add(person_id)
-        
         self.db_writer.enqueue(person_id, person_name, ts, confidence)
         print(f"[MARKED] {person_name} @ {ts} ({confidence:.2f})")
 
-    def run(self, camera_index=0):
-        cap = cv2.VideoCapture(camera_index)
+    def run(self, camera_index=0, use_realsense=False):
+        if use_realsense:
+            cap = RealSenseCamera(width=1280, height=720, fps=30)
+            cap.start()
+        else:
+            print("📷 Initializing Standard Webcam...")
+            cap = cv2.VideoCapture(camera_index)
+            if cap.isOpened():
+                print("✅ Standard Webcam started.")
+
         if not cap.isOpened():
             print("❌ Cannot access camera")
             return
