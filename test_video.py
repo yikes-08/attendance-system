@@ -143,7 +143,7 @@ class VideoTester:
                                     track.recognized = True
 
                 out_writer.write(frame)
-                # cv2.imshow("Test Video - Face Recognition", frame) # Optional: comment out for faster processing
+                cv2.imshow("Test Video - Face Recognition", frame) # Optional: comment out for faster processing
                 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     print("\n🛑 Video processing stopped manually.")

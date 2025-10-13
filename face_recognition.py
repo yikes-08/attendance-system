@@ -1,4 +1,3 @@
-# face_recognition.py
 import numpy as np
 import pickle
 from config import FACE_RECOGNITION_THRESHOLD
