@@ -15,6 +15,7 @@ from face_recognition import FaceRecognizer
 from simple_tracker import SimpleTracker
 from db_writer import DBWriter
 from config import DATABASE_PATH, ATTENDANCE_COOLDOWN, FACE_RECOGNITION_THRESHOLD
+from db_init import ensure_registered_faces_table
 
 class VideoTester:
     def __init__(self, use_faiss=False):
@@ -24,6 +25,9 @@ class VideoTester:
             has_cuda = 'CUDAExecutionProvider' in ort.get_available_providers()
         except Exception:
             has_cuda = False
+
+        # Ensure database table exists before proceeding (only for registered faces)
+        ensure_registered_faces_table()
 
         self.detector = FaceDetector(use_gpu=has_cuda)
         self.recognizer = FaceRecognizer(use_gpu=has_cuda, use_faiss=use_faiss)

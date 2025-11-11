@@ -6,6 +6,8 @@ from datetime import datetime
 import onnxruntime as ort
 import time
 import os
+import pandas as pd
+import glob
 
 from config import (
     DATABASE_PATH,
@@ -17,6 +19,7 @@ from face_recognition import FaceRecognizer
 from simple_tracker import SimpleTracker
 from db_writer import DBWriter
 from realsense_camera import RealSenseCamera  # Import the new camera class
+from db_init import ensure_registered_faces_table
 
 class DynamicFrameSkipper:
     def __init__(self, fast_rate=2, slow_rate=5):
@@ -37,6 +40,9 @@ class AttendanceSystem:
     def __init__(self, use_faiss=False):
         self.use_gpu = 'CUDAExecutionProvider' in ort.get_available_providers()
         print(f"⚙️ Initializing in {'GPU' if self.use_gpu else 'CPU'} mode")
+
+        # Ensure database table exists before proceeding (only for registered faces)
+        ensure_registered_faces_table()
 
         self.detector = FaceDetector(use_gpu=self.use_gpu)
         self.recognizer = FaceRecognizer(use_gpu=self.use_gpu, use_faiss=use_faiss)
@@ -76,20 +82,42 @@ class AttendanceSystem:
         if person_id in self.marked_this_session:
             return False
         try:
-            conn = sqlite3.connect(DATABASE_PATH)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT date, time FROM attendance WHERE person_id = ? ORDER BY id DESC LIMIT 1",
-                (person_id,)
-            )
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                last_timestamp = datetime.strptime(f"{row[0]} {row[1]}", "%Y-%m-%d %H:%M:%S")
-                if (datetime.now() - last_timestamp).total_seconds() < ATTENDANCE_COOLDOWN:
+            # Check CSV files for last attendance record (attendance stored only in CSV)
+            attendance_dir = "attendance_reports"
+            if not os.path.exists(attendance_dir):
+                return True
+            
+            # Get all CSV files in attendance_reports directory
+            csv_files = glob.glob(os.path.join(attendance_dir, "*.csv"))
+            if not csv_files:
+                return True
+            
+            # Read all CSV files and find the most recent attendance for this person
+            last_timestamp = None
+            for csv_file in csv_files:
+                try:
+                    df = pd.read_csv(csv_file)
+                    if 'PersonID' in df.columns and 'Date' in df.columns and 'Time' in df.columns:
+                        person_records = df[df['PersonID'] == person_id]
+                        if not person_records.empty:
+                            # Get the most recent record from this file
+                            for _, row in person_records.iterrows():
+                                try:
+                                    ts_str = f"{row['Date']} {row['Time']}"
+                                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                                    if last_timestamp is None or ts > last_timestamp:
+                                        last_timestamp = ts
+                                except Exception:
+                                    continue
+                except Exception:
+                    continue
+            
+            if last_timestamp:
+                time_diff = (datetime.now() - last_timestamp).total_seconds()
+                if time_diff < ATTENDANCE_COOLDOWN:
                     return False
         except Exception as e:
-            print(f"⚠️ Database check error in _should_mark: {e}")
+            print(f"⚠️ CSV check error in _should_mark: {e}")
         return True
 
     def _enqueue_mark(self, person_id, person_name, confidence):

@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import DATABASE_PATH, FACE_DETECTION_CONFIDENCE
 from face_detection import FaceDetector
 from face_recognition import FaceRecognizer
+from db_init import ensure_registered_faces_table
 
 class DatasetEnroller:
     def __init__(self):
@@ -22,20 +23,14 @@ class DatasetEnroller:
             
         self.detector = FaceDetector(use_gpu=has_cuda)
         self.recognizer = FaceRecognizer(use_gpu=has_cuda)
+        # Ensure the table exists before connecting
+        ensure_registered_faces_table()
         self.conn = sqlite3.connect(DATABASE_PATH)
         self.cur = self.conn.cursor()
-        self.setup_database()
 
     def setup_database(self):
-        self.cur.execute("""
-            CREATE TABLE IF NOT EXISTS registered_faces (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                encoding BLOB NOT NULL,
-                UNIQUE(name)
-            )
-        """)
-        self.conn.commit()
+        """Legacy method - kept for compatibility, but table is now ensured in __init__"""
+        ensure_registered_faces_table()
 
     def enroll_from_directory(self, dataset_path):
         if not os.path.isdir(dataset_path):
@@ -66,8 +61,8 @@ class DatasetEnroller:
                 if detections:
                     # Use the first and most confident detection
                     best_detection = detections[0]
-                    if best_detection['det_score'] > FACE_DETECTION_CONFIDENCE:
-                        embedding = self.recognizer.get_embedding(best_detection)
+                    if best_detection['confidence'] > FACE_DETECTION_CONFIDENCE:
+                        embedding = self.recognizer.get_face_embedding(best_detection['face_obj'])
                         if embedding is not None:
                             person_embeddings.append(embedding)
 
